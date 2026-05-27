@@ -1,0 +1,7 @@
+# NVIDIA GPU acceleration (CUDA 12.x). Install AFTER requirements.txt.
+# Linux: CuPy auto-detects /usr/local/cuda. Windows: install NVIDIA wheels too.
+cupy-cuda12x>=13.0
+# Windows-only: NVRTC dll bundled in wheels (gpu.py registers them at import).
+nvidia-cuda-nvrtc-cu12
+nvidia-cuda-runtime-cu12
+nvidia-cublas-cu12

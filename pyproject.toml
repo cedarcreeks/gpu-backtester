@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-backtester"
+version = "0.1.0"
+description = "GPU-accelerated point-in-time equity backtester with vectorized OCO simulation (CuPy)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "gpu-backtester contributors"}]
+keywords = ["backtesting", "gpu", "cupy", "trading", "quant", "finance"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "yfinance>=0.2",
+    "pyarrow>=14",
+    "numba>=0.58",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "cupy-cuda12x>=13.0",
+    "nvidia-cuda-nvrtc-cu12",
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cublas-cu12",
+]
+
+[project.scripts]
+gpu-bt = "gpu_bt.backtest_gpu:main"
+gpu-bt-validate = "gpu_bt.validate:main"
+
+[project.urls]
+Repository = "https://github.com/cedarcreeks/gpu-backtester"
+Issues = "https://github.com/cedarcreeks/gpu-backtester/issues"
+
+[tool.setuptools]
+packages = ["gpu_bt"]

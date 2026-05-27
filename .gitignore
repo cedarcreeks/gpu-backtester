@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Data caches
+data/
+parquet_cache/
+pit_cache/
+*.parquet
+reports/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+.pytest_cache/
+
+# Local config
+.env
+*.local
