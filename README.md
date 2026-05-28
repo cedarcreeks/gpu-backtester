@@ -32,10 +32,15 @@ launch overhead dominates — the validator detects this.
 - Portfolio simulation: position cap, risk-per-trade sizing, heat cap,
   drawdown / Calmar / Sharpe / Sortino / streaks
 
-The GPU and CPU engines produce **identical trades** (0 diff on smoke test of
-1025 ops). Portfolio metrics match exactly. A small number of RS ratings may
-differ by ±1 when two tickers have nearly identical performance scores
-(stable-sort tie-break differs between argsort implementations).
+The GPU and CPU engines produce **functionally identical trades** — exact
+parity validated end-to-end on a real PIT universe of 905 US equities ×
+3.5 years (~77k trades, 0 diff on `pnl_pct`, 0 diff on outcome). Walk-forward
+runs pick the same best params on every fold with identical out-of-sample
+returns. See `gpu_bt/compare.py` to reproduce.
+
+> Bit-for-bit identity is *not* possible because CuPy reorders sums across
+> thread blocks. The validator checks trade-level equality (entry/exit/PnL/
+> outcome) and metric tolerance 1e-9 — both pass exactly.
 
 ## Install
 
@@ -104,10 +109,17 @@ print(f"Capital final: ${pf['capital_final']:,.2f}  "
 ## CLI
 
 ```bash
-# Full nightly run with PIT universe
+# Single-period nightly run with PIT universe
 python -m gpu_bt.backtest_gpu --desde 2022-01-01 --hasta 2024-12-31 --guardar
 
-# Validate GPU output matches CPU bit-close (trades identical, metrics 1e-6)
+# Walk-forward grid search on GPU (5 windows × N param combos)
+python -m gpu_bt.wf --desde 2022-01-01 --hasta 2025-06-30 \
+                    --ventanas 5 --grid rapido --estado BREAKOUT --guardar
+
+# CPU vs GPU comparison (timings + parity report)
+python -m gpu_bt.compare --desde 2022-01-01 --hasta 2025-06-30
+
+# Validate GPU output matches CPU (trades identical, metrics 1e-9)
 python -m gpu_bt.validate --desde 2024-01-01 --hasta 2024-06-30
 ```
 
@@ -117,12 +129,15 @@ Reports are saved as JSON in `reports/`.
 
 ```
 gpu_bt/
-├── core.py          Pure CPU engine (Params, simulate, portfolio, walk-forward)
+├── core.py          Pure CPU engine (Params, simulate, portfolio)
 ├── gpu.py           CuPy kernels (tensor stack, RS, indicators, batched OCO)
 ├── cache.py         Parquet OHLCV cache + Numba kernels for the CPU path
 ├── pit_universe.py  Historical S&P 500 / S&P 400 constituents (Wikipedia) + filters
-├── backtest_gpu.py  Nightly CLI entry
-└── validate.py      CPU vs GPU parity validator
+├── wf.py            Walk-forward grid search on GPU
+├── wf_cpu.py        Walk-forward grid search on CPU (reference)
+├── backtest_gpu.py  Single-period CLI entry
+├── compare.py       CPU vs GPU timing + parity comparison
+└── validate.py      CPU vs GPU parity validator (smoke smoke)
 ```
 
 ## Customizing parameters

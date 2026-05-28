@@ -9,9 +9,9 @@ filtrar_candidatos + simular_portfolio se reusan del CPU (puro dict ops, ya
 rápidos) para garantizar paridad de filtros/sizing/heat-cap.
 
 Uso (nightly fast):
-  python scripts/backtest_gpu.py --pit --desde 2024-01-01 --hasta 2025-12-31
-  python scripts/backtest_gpu.py --pit --ventanas 4 --guardar
-  python scripts/backtest_gpu.py --pit --estado BREAKOUT --guardar
+  python -m gpu_bt.backtest_gpu --pit --desde 2024-01-01 --hasta 2025-12-31
+  python -m gpu_bt.backtest_gpu --pit --ventanas 4 --guardar
+  python -m gpu_bt.backtest_gpu --pit --estado BREAKOUT --guardar
 
 Self-contained backtest entry. Drop-in for nightly analysis.
 ===============================================================================
@@ -147,7 +147,7 @@ def main():
     args = ap.parse_args()
 
     if not gpu_disponible():
-        print("ERROR: CuPy/GPU no disponible. Usa scripts/backtest_wf.py (CPU).")
+        print("ERROR: CuPy/GPU no disponible. Usa gpu_bt.wf_cpu (CPU).")
         _sys.exit(1)
 
     params = Params(

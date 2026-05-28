@@ -39,6 +39,8 @@ gpu = [
 
 [project.scripts]
 gpu-bt = "gpu_bt.backtest_gpu:main"
+gpu-bt-wf = "gpu_bt.wf:main"
+gpu-bt-compare = "gpu_bt.compare:main"
 gpu-bt-validate = "gpu_bt.validate:main"
 
 [project.urls]

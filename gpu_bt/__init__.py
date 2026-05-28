@@ -23,6 +23,8 @@ from gpu_bt.gpu import (
     simulate_trades_gpu,
 )
 
+from gpu_bt.wf import run_walk_forward_gpu
+
 __all__ = [
     "Params",
     "precomputar_candidatos",
@@ -38,4 +40,5 @@ __all__ = [
     "compute_indicators_gpu",
     "extract_candidatos_gpu",
     "simulate_trades_gpu",
+    "run_walk_forward_gpu",
 ]

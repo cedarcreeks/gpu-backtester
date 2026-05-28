@@ -9,7 +9,7 @@ Corre el mismo backtest PIT en ambos motores y compara:
 Falla con exit 1 si hay divergencia. Útil para nightly post-deploy.
 
 Uso:
-  python scripts/validate_gpu_cpu.py --desde 2024-01-01 --hasta 2024-06-30
+  python -m gpu_bt.validate --desde 2024-01-01 --hasta 2024-06-30
 ===============================================================================
 """
 from __future__ import annotations

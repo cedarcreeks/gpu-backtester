@@ -16,7 +16,7 @@ Diseño:
 Paridad bit-a-bit GPU es físicamente imposible (paralelismo reordena sumas
 float). Garantía: trades idénticos + métricas con tol 1e-9.
 
-Self-contained CuPy port — no external broker deps.
+Self-contained CuPy port of the CPU engine — no external broker deps.
 ===============================================================================
 """
 from __future__ import annotations
@@ -87,10 +87,14 @@ COL_OPEN, COL_HIGH, COL_LOW, COL_CLOSE, COL_VOL = 0, 1, 2, 3, 4
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def historico_a_tensor(historico: dict,
-                       calendar_ref: str = "SPY") -> dict:
+                       calendar_ref: str = "union") -> dict:
     """
-    Reindex todos los DFs al calendar maestro (SPY por defecto, si no, union
-    de todas las fechas), apila en tensor [N_tickers, T_dias, 5] (OHLCV).
+    Reindex todos los DFs al calendar maestro.
+
+    calendar_ref="union" (default) — usa unión de todas las fechas (replica
+    CPU semantics donde simular_operacion itera el df ticker LOCAL,
+    cubriendo fechas que SPY/otros tickers no tienen).
+    calendar_ref="SPY" — usa SPY index (legacy, descarta fechas extra ticker).
 
     Returns dict con:
       arr_gpu:     cp.ndarray (N, T, 5) float64
@@ -101,13 +105,13 @@ def historico_a_tensor(historico: dict,
       spy_idx:     int (-1 si no hay)
       etf_indices: dict[ETF_key → i]
     """
-    ref_df = historico.get(calendar_ref)
-    if ref_df is None:
+    if calendar_ref == "union" or historico.get(calendar_ref) is None:
         all_dates: set = set()
         for df in historico.values():
             all_dates.update(df.index.normalize())
         dates = pd.DatetimeIndex(sorted(all_dates))
     else:
+        ref_df = historico[calendar_ref]
         dates = ref_df.index.normalize().unique().sort_values()
 
     keys = list(historico.keys())
@@ -116,17 +120,38 @@ def historico_a_tensor(historico: dict,
     arr = np.full((N, T, 5), np.nan, dtype=np.float64)
 
     cols = ["Open", "High", "Low", "Close", "Volume"]
+    ticker_first_global = np.full(len(keys), T, dtype=np.int64)
+    ticker_last_global  = np.full(len(keys), -1, dtype=np.int64)
+
     for n, k in enumerate(keys):
         df = historico[k]
-        # Forzar tz-naive + normalize para alinear con dates
         idx = df.index
         if idx.tz is not None:
             idx = idx.tz_convert(None)
         df2 = df.copy()
         df2.index = idx.normalize()
         df2 = df2[~df2.index.duplicated(keep="last")].sort_index()
-        df2 = df2.reindex(dates)  # NaN donde falta
-        arr[n, :, :] = df2[cols].to_numpy(dtype=np.float64)
+
+        positions = dates.get_indexer(df2.index)
+        valid_pos = positions[positions >= 0]
+        if len(valid_pos) > 0:
+            ticker_first_global[n] = int(valid_pos[0])
+            ticker_last_global[n]  = int(valid_pos[-1])
+
+        # SPY/ETF: mantener pad post-last (CPU usa pad para mercado_alcista
+        # en fechas post-SPY-last). Tickers normales: nan post-last.
+        is_market = (k == "SPY") or k.startswith("ETF_")
+        df2_pad = df2.reindex(dates, method="pad")
+        arr_n = np.array(df2_pad[cols].to_numpy(dtype=np.float64), copy=True)
+        fg = ticker_first_global[n]; lg = ticker_last_global[n]
+        if fg > 0:
+            arr_n[:fg, :] = np.nan
+        if not is_market:
+            if lg < T - 1 and lg >= 0:
+                arr_n[lg + 1:, :] = np.nan
+        if fg >= T:
+            arr_n[:, :] = np.nan
+        arr[n, :, :] = arr_n
 
     if not CUPY_OK:
         raise RuntimeError(f"CuPy no disponible: {_IMPORT_ERR}")
@@ -140,14 +165,42 @@ def historico_a_tensor(historico: dict,
     etf_indices = {k: idx_tickers[k] for k in keys if k.startswith("ETF_")}
     tickers = [k for k in keys if k != "SPY" and not k.startswith("ETF_")]
 
+    # Pre-compute mercado_alcista_t[T] EXACTAMENTE como CPU:
+    #   spy_sma = spy_df["Close"].rolling(200).mean()  (NaN en warmup)
+    #   i_spy   = spy_df.index.get_indexer([fecha], method="pad")
+    #   mercado_alcista[fecha] = spy.iloc[i_spy]["Close"] > spy_sma.iloc[i_spy]
+    # Equivalente sobre dates union: pad lookup → usar reindex(method="pad") +
+    # SMA computed sobre el spy_df ORIGINAL (no reindex), luego pad/ffill SMA.
+    spy_df_orig = historico.get("SPY")
+    if spy_df_orig is not None:
+        spy_idx_orig = spy_df_orig.index
+        if spy_idx_orig.tz is not None:
+            spy_idx_orig = spy_idx_orig.tz_convert(None)
+        spy_df_norm = spy_df_orig.copy()
+        spy_df_norm.index = spy_idx_orig.normalize()
+        spy_df_norm = spy_df_norm[~spy_df_norm.index.duplicated(keep="last")].sort_index()
+        spy_sma_orig = spy_df_norm["Close"].rolling(200).mean()
+        # Reindex con pad (CPU pad semantics): para cada date en `dates`, usar
+        # el último i_spy <= date. Si date < first_spy → NaN.
+        spy_close_pad = spy_df_norm["Close"].reindex(dates, method="pad")
+        spy_sma_pad   = spy_sma_orig.reindex(dates, method="pad")
+        mercado_alcista_np = ((spy_close_pad.to_numpy(dtype=np.float64)) >
+                              (spy_sma_pad.to_numpy(dtype=np.float64)))
+        # Replicar CPU: comparación con NaN da False (numpy ya hace eso)
+    else:
+        mercado_alcista_np = np.ones(T, dtype=np.bool_)
+
     return {
-        "arr_gpu":     arr_gpu,
-        "valid_mask":  valid,
-        "tickers":     tickers,
-        "idx_tickers": idx_tickers,
-        "dates":       dates.to_numpy().astype("datetime64[D]"),
-        "spy_idx":     spy_idx,
-        "etf_indices": etf_indices,
+        "arr_gpu":             arr_gpu,
+        "valid_mask":          valid,
+        "tickers":             tickers,
+        "idx_tickers":         idx_tickers,
+        "dates":               dates.to_numpy().astype("datetime64[D]"),
+        "spy_idx":             spy_idx,
+        "etf_indices":         etf_indices,
+        "ticker_first_global": cp.asarray(ticker_first_global),
+        "ticker_last_global":  cp.asarray(ticker_last_global),
+        "mercado_alcista_t":   cp.asarray(mercado_alcista_np),
     }
 
 
@@ -444,18 +497,23 @@ def extract_candidatos_gpu(tensor_data: dict,
     idx_tickers = tensor_data["idx_tickers"]
     dates       = tensor_data["dates"]
     spy_idx     = tensor_data["spy_idx"]
+    first_global = tensor_data["ticker_first_global"]   # [N]
+    last_global  = tensor_data["ticker_last_global"]    # [N]
 
     N, T, _ = arr_gpu.shape
 
-    # Mask filas tickers (excluye SPY/ETF)
     ticker_idxs = cp.asarray([idx_tickers[t] for t in tickers], dtype=cp.int64)
 
-    # Universo PIT por (n_in_tickers, t): valid AND t in [WARMUP_MIN, T-2] AND close>0
     closes = arr_gpu[:, :, COL_CLOSE]
     valid_full = valid_mask
-    t_range_mask = cp.zeros(T, dtype=cp.bool_)
-    t_range_mask[WARMUP_MIN:T - 1] = True
-    universe_mask_full = valid_full & t_range_mask[None, :]
+
+    # Per-ticker warmup mask (paridad CPU):
+    #   CPU usa i_local del df ticker (i >= WARMUP_MIN, i < len(df) - 1).
+    #   En tensor global: t >= first_global[n] + WARMUP_MIN AND t < last_global[n].
+    t_arr = cp.arange(T)
+    warmup_mask = (t_arr[None, :] >= (first_global[:, None] + WARMUP_MIN))
+    last_mask   = (t_arr[None, :] <  last_global[:, None])
+    universe_mask_full = valid_full & warmup_mask & last_mask
     # Restringir a sólo tickers no-SPY/ETF para RS cross-sectional
     universe_mask_tickers = cp.zeros_like(universe_mask_full)
     universe_mask_tickers[ticker_idxs] = universe_mask_full[ticker_idxs]
@@ -465,9 +523,7 @@ def extract_candidatos_gpu(tensor_data: dict,
     d0 = np.datetime64(desde, "D")
     d1 = np.datetime64(hasta, "D")
     date_in = (dates_np >= d0) & (dates_np <= d1)
-    # Combinar con t_range
-    t_active = cp.asarray(date_in) & t_range_mask
-    # Mínimo n_universe >= 5
+    t_active = cp.asarray(date_in)
     universe_active = universe_mask_tickers & t_active[None, :]
 
     # Filter days where universe >=5
@@ -483,13 +539,9 @@ def extract_candidatos_gpu(tensor_data: dict,
     # Indicadores
     ind = compute_indicators_gpu(arr_gpu, valid_full)
 
-    # SPY SMA200 → mercado_alcista por día
-    spy_sma = _spy_sma200_gpu(arr_gpu, spy_idx, T)
-    if spy_sma is not None:
-        spy_close = arr_gpu[spy_idx, :, COL_CLOSE]
-        mercado_alcista_t = (cp.isfinite(spy_sma) & (spy_close > spy_sma))
-    else:
-        mercado_alcista_t = cp.ones(T, dtype=cp.bool_)
+    # mercado_alcista pre-computado en historico_a_tensor (replica CPU pad
+    # semantics exact — usa spy_df ORIGINAL, no tensor con pad).
+    mercado_alcista_t = tensor_data["mercado_alcista_t"]
 
     # Pre-clasificar estado (con umbrales CPU)
     p1w = perfs[:, :, 0]
@@ -667,7 +719,10 @@ def simulate_trades_gpu(señales: list, tensor_data: dict, params) -> list:
         ticker_idx_host[k] = idx_tickers[tk]
         idx0_host[k]       = fecha_to_t[t_str]
         raw_host[k]        = float(s["entrada_real"])
-        entrada_host[k]    = round(raw_host[k] * (1.0 + slip), 2)
+        # FORZAR Python float() antes de round — np.float64.__round__ no
+        # replica banker's rounding identico a Python builtin round (caso
+        # 135.0 * 1.001 = 135.13499... → CPU 135.13 vs np 135.14).
+        entrada_host[k]    = round(float(raw_host[k]) * (1.0 + slip), 2)
         stop_host[k]       = float(s["stop"])
         t1_host[k]         = float(s["t1"])
         t2_host[k]         = float(s["t2"])
@@ -681,12 +736,14 @@ def simulate_trades_gpu(señales: list, tensor_data: dict, params) -> list:
     t2_p    = cp.asarray(t2_host)
 
     # Para cada k slice [max_hold+1] de O/H/L/C desde idx0+1
-    # idx_off[k, j] = idx0[k] + j+1 (j=0..max_hold-1)
-    # j cumple 1..max_hold; usaremos j_arr = arange(1, max_hold+1)
     j_arr = cp.arange(1, max_hold + 1, dtype=cp.int64)
     idx_mat = idx0[:, None] + j_arr[None, :]  # [K, H]
+    # in_range per ticker: idx <= last_global[ticker]. Replica CPU check
+    # `idx >= len(df)` en local-ticker semantics → fin_datos.
+    last_global_arr = tensor_data["ticker_last_global"][tk_idx]  # [K]
+    in_range = idx_mat <= last_global_arr[:, None]
+    # Clamp para indexar sin OOB; los out-of-range se deactivan en loop
     idx_mat_clipped = cp.minimum(idx_mat, T - 1)
-    in_range = idx_mat < T  # [K, H]
 
     opens  = arr_gpu[:, :, COL_OPEN]
     highs  = arr_gpu[:, :, COL_HIGH]
@@ -715,11 +772,11 @@ def simulate_trades_gpu(señales: list, tensor_data: dict, params) -> list:
     MOTIVO_STR = {0: "stop", 1: "t2", 2: "filtro_mercado", 3: "expirado", 4: "fin_datos"}
 
     for j_i in range(max_hold):
-        # Para indices fuera del histórico (idx>=T): cerrar con close último valido
+        # Out of range per-ticker: idx > last_global[ticker] → fin_datos.
+        # CPU usa closes[len(df) - 1] (último close real del ticker df).
         out_of_range_now = (~in_range[:, j_i]) & active
         if cp.any(out_of_range_now):
-            # close último valido por ticker = closes[tk_idx, T-1]
-            last_close = closes[tk_idx, T - 1]
+            last_close = closes[tk_idx, last_global_arr]
             precio_salida = cp.where(out_of_range_now, last_close, precio_salida)
             motivo = cp.where(out_of_range_now, 4, motivo)  # fin_datos
             dias   = cp.where(out_of_range_now, j_i + 1, dias)
