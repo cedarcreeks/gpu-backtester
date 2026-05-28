@@ -17,9 +17,35 @@ expensive stages:
 | RS rating + indicators    | seconds–minutes  | sub-second batches |
 | OCO trade simulation      | per-trade loop   | `[K, max_hold+1]` vectorized step |
 
-For large universes the GPU port is 10–30× faster on precompute and 30–50× on
-sim. For small universes (< 20 tickers) the CPU engine wins because kernel
-launch overhead dominates — the validator detects this.
+For small universes (< 20 tickers) the CPU engine wins because kernel launch
+overhead dominates — the validator detects this. For real universes the GPU
+port is faster end-to-end.
+
+## Benchmarks
+
+Reproducible via `python -m gpu_bt.compare --desde 2022-01-01 --hasta 2025-06-30`.
+
+Hardware: NVIDIA RTX 2060 (6 GB, mobile) · 8-core CPU with Numba multiproc ·
+Python 3.10+. Dataset: PIT universe 905 US equities × ~1100 trading days
+(calendar union), `Params()` defaults, no grid tuning.
+
+| Workload                               |     CPU |    GPU  | Speedup |
+|----------------------------------------|--------:|--------:|--------:|
+| Single backtest, all states            |  589 s  |  9.4 s  | **63×** |
+| Single backtest, single state filter   |  307 s  |  7.6 s  | **40×** |
+| Walk-forward (48 params × 5 windows)   | 1007 s  |   71 s  | **14×** |
+| Walk-forward (648 params × 5 windows)  |   ~3.8 h *(extrapolated)* | 287 s | **~80×** |
+
+Breakdown of the single-backtest path:
+
+| Stage         |   CPU   |  GPU  | Speedup |
+|---------------|--------:|------:|--------:|
+| Precompute    |  306 s  | 8.3 s |    37×  |
+| OCO sim       |  282 s  | 0.6 s |   465×  |
+
+Larger universes benefit more — the OCO sim batches `K` signals × `max_hold`
+days into a single tensor step, scaling linearly with `K` on GPU vs sequential
+on CPU.
 
 ## What it does
 
