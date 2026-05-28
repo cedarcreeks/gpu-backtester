@@ -205,6 +205,8 @@ def main():
     ap.add_argument("--ratio-train", type=float, default=0.7)
     ap.add_argument("--grid", choices=["rapido","normal","completo"], default="normal")
     ap.add_argument("--estado", type=str, default=None)
+    ap.add_argument("--filtro-mercado", action="store_true", default=False,
+                    help="Solo combinaciones con SPY>SMA200 (filtro_mercado=True)")
     ap.add_argument("--guardar", action="store_true")
     args = ap.parse_args()
 
@@ -220,6 +222,10 @@ def main():
     print(f"[WF-GPU] PIT: {len(historico)} tickers")
 
     grid = build_param_grid(args.grid)
+    if args.filtro_mercado:
+        antes = len(grid)
+        grid = [p for p in grid if p.filtro_mercado]
+        print(f"[WF-GPU] --filtro-mercado: {antes} → {len(grid)} params")
     print(f"[WF-GPU] Grid {args.grid}: {len(grid)} params")
 
     res = run_walk_forward_gpu(
